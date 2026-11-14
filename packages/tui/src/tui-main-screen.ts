@@ -5,6 +5,9 @@ import { deleteKittyImage, isImageLine } from "./terminal-image.ts";
 import { type ResizeRedrawProvider, type TUI, TuiBase, type TuiStopOptions } from "./tui.ts";
 import { visibleWidth } from "./utils.ts";
 
+/** OSC 133 prompt markers at the start of a rendered line. Fullscreen uses them for prompt navigation. */
+const OSC133_ZONE_PREFIX = /^(?:\x1b\]133;[ABC](?:\x07|\x1b\\))+/;
+
 const KITTY_SEQUENCE_PREFIX = "\x1b_G";
 const MAX_RENDER_WRITE_CHARS = 1024 * 1024;
 
@@ -313,10 +316,13 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		}
 
 		// Reused prefix lines were resolved and reset by the render that produced them, so only
-		// freshly rendered chunks resolve fake cursors here.
+		// freshly rendered chunks resolve fake cursors here. Drop OSC 133 markers: the terminal
+		// reads 133;A as a new shell prompt, which ends program status (OSC 7501).
 		let newLines = reusedPrefixLines > 0 ? this.previousLines.slice(0, reusedPrefixLines) : [];
 		for (let i = firstChangedChild; i < renderedChildren.length; i++) {
-			for (const line of this.resolveFakeCursors(renderedChildren[i]!)) newLines.push(line);
+			for (const line of this.resolveFakeCursors(renderedChildren[i]!)) {
+				newLines.push(line.replace(OSC133_ZONE_PREFIX, ""));
+			}
 		}
 		this.previousRenderComponents = [...this.children];
 		this.previousRenderChunks = renderedChildren;

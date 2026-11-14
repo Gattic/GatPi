@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { InMemoryModelsStore } from "@earendil-works/pi-ai";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 
@@ -21,8 +21,19 @@ const image = { type: "image" as const, data: "cG5n", mimeType: "image/png" };
 
 describe("ModelRuntime classifiers", () => {
 	const tempDirs: string[] = [];
+	const originalTypesafeApiKey = process.env.TYPESAFE_API_KEY;
+
+	beforeEach(() => {
+		delete process.env.TYPESAFE_API_KEY;
+	});
+
 	afterEach(() => {
 		for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+		if (originalTypesafeApiKey === undefined) {
+			delete process.env.TYPESAFE_API_KEY;
+		} else {
+			process.env.TYPESAFE_API_KEY = originalTypesafeApiKey;
+		}
 	});
 
 	async function createRuntime(modelsJson?: object): Promise<ModelRuntime> {
