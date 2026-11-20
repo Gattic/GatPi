@@ -125,6 +125,28 @@ describe("isContextOverflow", () => {
 		expect(isContextOverflow(commaMessage, 256000)).toBe(true);
 	});
 
+	it("detects DSv41 tensorfold KV pool admission errors", () => {
+		// tensorfold-native refuses a request when its shared KV pool cannot hold every active
+		// stream's rendered prompt plus the requested max_tokens. Compacting and retrying is the
+		// recovery, so it has to be recognized as a context overflow rather than a generic error.
+		const errorMessage =
+			"the streams' prompts and budgets fill the context's pool: lower max_tokens, or retry when a stream ends";
+		expect(isContextOverflow(createErrorMessage(errorMessage, "sparky0"), 262144)).toBe(true);
+
+		// formatProviderError prefixes the status; the match must not depend on the message starting there.
+		expect(isContextOverflow(createErrorMessage(`500 ${errorMessage}`, "local"), 262144)).toBe(true);
+
+		// Servers may render the apostrophe as U+2019.
+		const curlyMessage =
+			"the streams\u2019 prompts and budgets fill the context\u2019s pool: lower max_tokens, or retry when a stream ends";
+		expect(isContextOverflow(createErrorMessage(curlyMessage, "sparky0"), 262144)).toBe(true);
+	});
+
+	it("does not treat unrelated pool errors as DSv41 tensorfold overflow", () => {
+		expect(isContextOverflow(createErrorMessage("500 connection pool exhausted"), 262144)).toBe(false);
+		expect(isContextOverflow(createErrorMessage("500 the context pool was resized"), 262144)).toBe(false);
+	});
+
 	it("does not treat generic non-overflow Ollama errors as overflow", () => {
 		const message = createErrorMessage("500 `model runner crashed unexpectedly`");
 		expect(isContextOverflow(message, 32768)).toBe(false);

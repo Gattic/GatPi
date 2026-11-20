@@ -27,6 +27,7 @@ import type { AssistantMessage } from "../types.ts";
  * - MiniMax: "invalid params, context window exceeds limit"
  * - Kimi For Coding: "Your request exceeded model token limit: X (requested: Y)"
  * - DS4: "Prompt has X tokens, but the configured context size is Y tokens"
+ * - DSv41 tensorfold (tensorfold-native): "the streams' prompts and budgets fill the context's pool: lower max_tokens, or retry when a stream ends"
  * - Cerebras: "400/413 status code (no body)"
  * - Mistral: "Prompt contains X tokens ... too large for model with Y maximum context length"
  * - z.ai: `{"code":"1261","message":"Prompt too long"}`, `{"code":"1261","message":"Prompt exceeds max length"}` (CN endpoint), or silent overflow via usage.input > contextWindow
@@ -57,6 +58,7 @@ const OVERFLOW_PATTERNS = [
 	/exceeded model token limit/i, // Kimi For Coding
 	/too large for model with \d+ maximum context length/i, // Mistral
 	/prompt has [\d,]+ tokens?, but the configured context size is [\d,]+ tokens?/i, // DS4 server
+	/fill the context['\u2019]?s pool/i, // DSv41 tensorfold: the shared KV pool cannot hold every stream's prompt and output budget
 	/model_context_window_exceeded/i, // z.ai non-standard finish_reason surfaced as error text
 	/prompt too long; exceeded (?:max )?context length/i, // Ollama explicit overflow error
 	/range of input length should be/i, // DashScope / Qwen Token Plan
@@ -114,6 +116,7 @@ const NON_OVERFLOW_PATTERNS = [
  * - LM Studio: "greater than the context length"
  * - Kimi For Coding: "exceeded model token limit: X (requested: Y)"
  * - DS4: "Prompt has X tokens, but the configured context size is Y tokens"
+ * - DSv41 tensorfold: "the streams' prompts and budgets fill the context's pool"
  * - DashScope/Qwen: "Range of input length should be [1, X]"
  * - z.ai: "Prompt too long"
  *
