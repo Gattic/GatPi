@@ -477,6 +477,14 @@ export interface Usage {
 	 * providers that expose a reasoning breakdown; left undefined by providers that don't.
 	 */
 	reasoning?: number;
+	/**
+	 * Tokens the request had in context, when the provider reports that figure for the
+	 * request itself. Providers whose usage sums several internal requests (for example an
+	 * ACP agent that runs its own tool loop) set this so Pi does not mistake billing totals
+	 * for context size. `null` means the provider reports no per-request occupancy; Pi then
+	 * estimates context from messages.
+	 */
+	contextTokens?: number | null;
 	totalTokens: number;
 	cost: {
 		/** Catalog-derived input cost. */

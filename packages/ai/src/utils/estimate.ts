@@ -15,7 +15,14 @@ export interface ContextUsageEstimate {
 const CHARS_PER_TOKEN = 3.5;
 const ESTIMATED_IMAGE_CHARS = 4800;
 
+/**
+ * Context tokens a response saw. Uses the provider's per-request figure when it reports
+ * one, otherwise approximates from the usage totals. Providers that aggregate several
+ * internal requests into one usage block set `contextTokens` (or `null` when they report
+ * no per-request occupancy) so their billing totals are not mistaken for context size.
+ */
 export function calculateContextTokens(usage: Usage): number {
+	if (usage.contextTokens !== undefined) return usage.contextTokens ?? 0;
 	return usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
 }
 
