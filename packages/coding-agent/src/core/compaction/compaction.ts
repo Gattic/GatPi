@@ -24,6 +24,7 @@ import type {
 	Usage,
 } from "@earendil-works/pi-ai/compat";
 import { completeSimple } from "@earendil-works/pi-ai/compat";
+import { calculateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { convertToLlm } from "../messages.ts";
 import {
 	buildSessionProjection,
@@ -133,13 +134,9 @@ export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 // Token calculation
 // ============================================================================
 
-/**
- * Calculate total context tokens from usage.
- * Uses the native totalTokens field when available, falls back to computing from components.
- */
-export function calculateContextTokens(usage: Usage): number {
-	return usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
-}
+// Shared with pi-ai so a provider's per-request context figure (or an explicit "none")
+// is honored instead of reading aggregate usage totals as context size.
+export { calculateContextTokens };
 
 /**
  * Get usage from an assistant message if available.

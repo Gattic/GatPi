@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AssistantMessage } from "../src/types.ts";
+import type { AssistantMessage, Usage } from "../src/types.ts";
 import { isContextOverflow, isRecoverableLength } from "../src/utils/overflow.ts";
 
 function createErrorMessage(errorMessage: string, provider = "ollama"): AssistantMessage {
@@ -253,5 +253,52 @@ describe("isContextOverflow", () => {
 	it("does not treat zero-output length stops far below context as context overflow", () => {
 		const message = createLengthStopMessage({ input: 100, cacheRead: 0, output: 0 });
 		expect(isContextOverflow(message, 200000)).toBe(false);
+	});
+});
+
+// An ACP agent reports the whole turn's billing usage, not one request's context. Only the
+// per-request occupancy may be compared with the window, or a completed turn looks like
+// silent overflow (the 290% case: 3,037,697 aggregate tokens against a 1,048,576 window).
+describe("aggregate turn usage", () => {
+	const aggregate: Usage = {
+		input: 165_388,
+		output: 32_251,
+		cacheRead: 2_840_058,
+		cacheWrite: 0,
+		totalTokens: 3_037_697,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+
+	function createStopMessage(usage: Usage, stopReason: "stop" | "length" = "stop"): AssistantMessage {
+		return {
+			role: "assistant",
+			content: [],
+			api: "openai-completions",
+			provider: "google-antigravity-acp",
+			model: "gemini-4-neon",
+			usage,
+			stopReason,
+			timestamp: Date.now(),
+		};
+	}
+
+	it("does not read aggregate usage as silent overflow when request context is reported", () => {
+		const message = createStopMessage({ ...aggregate, contextTokens: 135_678 });
+		expect(isContextOverflow(message, 1_048_576)).toBe(false);
+	});
+
+	it("does not read aggregate usage as overflow when the provider reports no context", () => {
+		const message = createStopMessage({ ...aggregate, contextTokens: null });
+		expect(isContextOverflow(message, 1_048_576)).toBe(false);
+	});
+
+	it("still detects silent overflow from a reported request context above the window", () => {
+		const message = createStopMessage({ ...aggregate, contextTokens: 1_200_000 });
+		expect(isContextOverflow(message, 1_048_576)).toBe(true);
+	});
+
+	it("does not read aggregate usage as a filled-context length stop", () => {
+		const message = createStopMessage({ ...aggregate, output: 0, contextTokens: 135_678 }, "length");
+		expect(isContextOverflow(message, 1_048_576)).toBe(false);
 	});
 });

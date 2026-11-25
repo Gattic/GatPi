@@ -28,6 +28,18 @@ function createAssistant(timestamp: number, totalTokens: number): AssistantMessa
 	};
 }
 
+/** An ACP turn's aggregate billing usage: the sum over every internal model request. */
+function aggregateTurnUsage(): Usage {
+	return {
+		input: 165_388,
+		output: 32_251,
+		cacheRead: 2_840_058,
+		cacheWrite: 0,
+		totalTokens: 3_037_697,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+}
+
 const model: Model<"openai-responses"> = {
 	id: "test-model",
 	name: "Test Model",
@@ -92,6 +104,34 @@ describe("context token estimation", () => {
 			usageTokens: 2_000,
 			trailingTokens: 2,
 			lastUsageIndex: 3,
+		});
+	});
+
+	// An ACP agent runs its own tool loop and reports the whole turn's billing usage.
+	// Its per-request context occupancy is the last internal request only.
+	it("uses a provider-reported request context instead of aggregate turn usage", () => {
+		const assistant = createAssistant(100, 0);
+		assistant.usage = { ...aggregateTurnUsage(), contextTokens: 135_678 };
+		const context = normalizeContext({ messages: [assistant] });
+
+		expect(estimateContextTokens(context)).toEqual({
+			tokens: 135_678,
+			usageTokens: 135_678,
+			trailingTokens: 0,
+			lastUsageIndex: 0,
+		});
+	});
+
+	it("estimates from messages when the provider reports no request context", () => {
+		const assistant = createAssistant(100, 0);
+		assistant.usage = { ...aggregateTurnUsage(), contextTokens: null };
+		const context = normalizeContext({ messages: [assistant] });
+
+		expect(estimateContextTokens(context)).toEqual({
+			tokens: 2,
+			usageTokens: 0,
+			trailingTokens: 2,
+			lastUsageIndex: null,
 		});
 	});
 });

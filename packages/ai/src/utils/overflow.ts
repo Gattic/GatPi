@@ -161,7 +161,7 @@ export function isContextOverflow(message: AssistantMessage, contextWindow?: num
 
 	// Case 2: Silent overflow (z.ai style) - successful but usage exceeds context
 	if (contextWindow && message.stopReason === "stop") {
-		const inputTokens = message.usage.input + message.usage.cacheRead;
+		const inputTokens = requestContextTokens(message.usage);
 		if (inputTokens > contextWindow) {
 			return true;
 		}
@@ -171,13 +171,24 @@ export function isContextOverflow(message: AssistantMessage, contextWindow?: num
 	// to fit the context window, leaving no room for output. Returns stopReason "length"
 	// with output=0 and input+cacheRead filling the context window.
 	if (contextWindow && message.stopReason === "length" && message.usage.output === 0) {
-		const inputTokens = message.usage.input + message.usage.cacheRead;
+		const inputTokens = requestContextTokens(message.usage);
 		if (inputTokens >= contextWindow * 0.99) {
 			return true;
 		}
 	}
 
 	return false;
+}
+
+/**
+ * Context occupancy of the request that produced `usage`. Prefers the provider's
+ * per-request figure; a provider that reports only aggregate usage over several internal
+ * requests sets `contextTokens` (or `null` when it reports none), so its billing totals
+ * are never read as context size.
+ */
+function requestContextTokens(usage: AssistantMessage["usage"]): number {
+	if (usage.contextTokens !== undefined) return usage.contextTokens ?? 0;
+	return usage.input + usage.cacheRead;
 }
 
 /**

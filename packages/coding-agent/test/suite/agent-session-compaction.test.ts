@@ -1246,4 +1246,45 @@ describe("AgentSession compaction characterization", () => {
 		expect(belowThresholdSpy).not.toHaveBeenCalled();
 		expect(disabledSpy).not.toHaveBeenCalled();
 	});
+
+	// An ACP agent reports the whole turn's billing usage (3,037,697 tokens against a
+	// 1,048,576 window = 290%) while its last internal request held 135,678 tokens.
+	// Only the latter may drive the footer percentage and compaction.
+	it("reads a provider-reported request context instead of aggregate turn usage", async () => {
+		const harness = await createHarness({
+			models: [{ id: "gemini-4-neon", contextWindow: 1_048_576, maxTokens: 65_535 }],
+		});
+		harnesses.push(harness);
+		const model = harness.getModel();
+		const assistant: AssistantMessage = {
+			...fauxAssistantMessage("done"),
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			usage: {
+				input: 165_388,
+				output: 32_251,
+				cacheRead: 2_840_058,
+				cacheWrite: 0,
+				totalTokens: 3_037_697,
+				contextTokens: 135_678,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+		};
+		harness.sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "add the banner" }],
+			timestamp: Date.now(),
+		});
+		harness.sessionManager.appendMessage(assistant);
+
+		const usage = harness.session.getContextUsage();
+		expect(usage?.tokens).toBe(135_678);
+		expect(usage?.percent).toBeCloseTo(12.9, 1);
+
+		const internals = harness.session as unknown as SessionWithCompactionInternals;
+		const compactSpy = vi.spyOn(internals, "_runAutoCompaction").mockResolvedValue(false);
+		await internals._checkCompaction(assistant);
+		expect(compactSpy).not.toHaveBeenCalled();
+	});
 });
