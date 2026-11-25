@@ -35,7 +35,11 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 		}
 	});
 
-	async function createRuntimeHost(extensionFactory: ExtensionFactory) {
+	async function createRuntimeHost(
+		extensionFactory: ExtensionFactory,
+		options?: { failCreateRuntimeOnCall?: number },
+	) {
+		let createCalls = 0;
 		const tempDir = join(tmpdir(), `pi-runtime-events-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(tempDir, { recursive: true });
 
@@ -79,6 +83,10 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			},
 		};
 		const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent }) => {
+			createCalls += 1;
+			if (options?.failCreateRuntimeOnCall === createCalls) {
+				throw new Error("runtime creation failed");
+			}
 			const services = await createAgentSessionServices({
 				...runtimeOptions,
 				cwd,
@@ -204,6 +212,20 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 		);
 		runtimeHost.setBeforeSessionInvalidate(undefined);
 		runtimeHost.setRebindSession(undefined);
+	});
+
+	it("runs afterSessionReplacement when runtime creation throws", async () => {
+		const phases: string[] = [];
+		const { runtimeHost } = await createRuntimeHost(() => {}, { failCreateRuntimeOnCall: 2 });
+		runtimeHost.setBeforeSessionInvalidate(() => {
+			phases.push("beforeSessionInvalidate");
+		});
+		runtimeHost.setAfterSessionReplacement(() => {
+			phases.push("afterSessionReplacement");
+		});
+
+		await expect(runtimeHost.newSession()).rejects.toThrow("runtime creation failed");
+		expect(phases).toEqual(["beforeSessionInvalidate", "afterSessionReplacement"]);
 	});
 
 	it("emits session_before_fork and session_start and honors cancellation", async () => {

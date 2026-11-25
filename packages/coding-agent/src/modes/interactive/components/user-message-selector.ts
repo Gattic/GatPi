@@ -25,9 +25,14 @@ class UserMessageList implements Component {
 	private selectedIndex: number = 0;
 	public onSelect?: (entryId: string) => void;
 	public onCancel?: () => void;
-	private maxVisible: number = 10; // Max messages visible
+	private maxVisible: number; // Max messages visible
 
-	constructor(messages: UserMessageItem[], initialSelectedId?: string) {
+	constructor(messages: UserMessageItem[], initialSelectedId?: string, terminalHeight = 40) {
+		// Keep the whole selector inside the viewport. A taller selector starts
+		// above the visible screen, so every selection change would force the
+		// renderer to clear the scrollback and replay the whole transcript.
+		// Reserve rows for the header/borders, scroll indicator, and footer.
+		this.maxVisible = Math.max(1, Math.min(10, Math.floor((terminalHeight - 13) / 3)));
 		// Store messages in chronological order (oldest to newest)
 		this.messages = messages;
 		const initialIndex = initialSelectedId ? messages.findIndex((message) => message.id === initialSelectedId) : -1;
@@ -130,6 +135,7 @@ export class UserMessageSelectorComponent extends Container {
 		onSelect: (entryId: string) => void,
 		onCancel: () => void,
 		initialSelectedId?: string,
+		terminalHeight?: number,
 	) {
 		super();
 
@@ -148,7 +154,7 @@ export class UserMessageSelectorComponent extends Container {
 		this.addChild(new Spacer(1));
 
 		// Create message list
-		this.messageList = new UserMessageList(messages, initialSelectedId);
+		this.messageList = new UserMessageList(messages, initialSelectedId, terminalHeight);
 		this.messageList.onSelect = onSelect;
 		this.messageList.onCancel = onCancel;
 

@@ -526,6 +526,13 @@ export interface TUI extends Component {
 	stop(options?: TuiStopOptions): void;
 	renderNow(force?: boolean): void;
 	requestRender(force?: boolean): void;
+	/**
+	 * Defer renders until the matching resumeRender(). Nested calls are counted.
+	 * Used while a session is being replaced so intermediate states do not each
+	 * repaint the transcript before the final state is bound.
+	 */
+	suspendRender(): void;
+	resumeRender(): void;
 	addInputListener(listener: TuiInputListener): () => void;
 	removeInputListener(listener: TuiInputListener): void;
 	onTerminalColorSchemeChange(listener: (scheme: TerminalColorScheme) => void): () => void;
@@ -556,6 +563,8 @@ export abstract class TuiBase extends Container implements TUI {
 	/** Global callback for debug key (Shift+Ctrl+D). Called before input is forwarded to focused component. */
 	public onDebug?: () => void;
 	private renderRequested = false;
+	private renderSuspended = 0;
+	private renderPendingWhileSuspended = false;
 	private immediateRenderScheduled = false;
 	private renderTimer: NodeJS.Timeout | undefined;
 	private lastRenderAt = 0;
@@ -1068,7 +1077,29 @@ export abstract class TuiBase extends Container implements TUI {
 		this.doRender();
 	}
 
+	suspendRender(): void {
+		this.renderSuspended += 1;
+		if (this.renderSuspended === 1 && (this.renderRequested || this.renderTimer || this.immediateRenderScheduled)) {
+			this.renderPendingWhileSuspended = true;
+		}
+		// Drop an already scheduled frame so it cannot paint an intermediate state.
+		this.renderRequested = false;
+		this.cancelRenderTimer();
+	}
+
+	resumeRender(): void {
+		if (this.renderSuspended === 0) return;
+		this.renderSuspended -= 1;
+		if (this.renderSuspended > 0 || !this.renderPendingWhileSuspended) return;
+		this.renderPendingWhileSuspended = false;
+		this.requestRender();
+	}
+
 	requestRender(force = false): void {
+		if (this.renderSuspended > 0) {
+			this.renderPendingWhileSuspended = true;
+			return;
+		}
 		if (force) {
 			this.resetRenderState();
 			this.requestImmediateRender();
@@ -1080,6 +1111,10 @@ export abstract class TuiBase extends Container implements TUI {
 	}
 
 	private requestImmediateRender(): void {
+		if (this.renderSuspended > 0) {
+			this.renderPendingWhileSuspended = true;
+			return;
+		}
 		this.cancelRenderTimer();
 		this.renderRequested = true;
 		if (this.immediateRenderScheduled) return;

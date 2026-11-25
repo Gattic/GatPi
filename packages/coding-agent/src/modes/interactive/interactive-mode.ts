@@ -643,7 +643,13 @@ export class InteractiveMode {
 		this.options = { ...options, tuiMode };
 		this.autoTrustOnReloadCwd = options.autoTrustOnReloadCwd;
 		this.runtimeHost.setBeforeSessionInvalidate(() => {
+			// Hold renders until the replacement is bound so the teardown state
+			// (editor reset, cleared widgets) never repaints the old transcript.
+			this.ui.suspendRender();
 			this.resetExtensionUI();
+		});
+		this.runtimeHost.setAfterSessionReplacement(() => {
+			this.ui.resumeRender();
 		});
 		this.runtimeHost.setRebindSession(async () => {
 			await this.rebindCurrentSession({ renderBeforeBind: true });
@@ -5874,11 +5880,14 @@ export class InteractiveMode {
 			const selector = new UserMessageSelectorComponent(
 				userMessages.map((m) => ({ id: m.entryId, text: m.text })),
 				async (entryId) => {
-					done();
+					// The selector close, session teardown, and rebind are one visual
+					// transition; rendering each intermediate state would repaint the
+					// outgoing transcript before the forked one is bound.
+					this.ui.suspendRender();
 					try {
+						done();
 						const result = await this.runtimeHost.fork(entryId);
 						if (result.cancelled) {
-							this.ui.requestRender();
 							return;
 						}
 
@@ -5886,6 +5895,8 @@ export class InteractiveMode {
 						this.showStatus("Forked to new session");
 					} catch (error: unknown) {
 						this.showError(error instanceof Error ? error.message : String(error));
+					} finally {
+						this.ui.resumeRender();
 					}
 				},
 				() => {
@@ -5893,6 +5904,7 @@ export class InteractiveMode {
 					this.ui.requestRender();
 				},
 				initialSelectedId,
+				this.ui.terminal.rows,
 			);
 			return { component: selector, focus: selector.getMessageList() };
 		});
