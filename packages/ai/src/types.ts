@@ -462,6 +462,17 @@ export interface ToolCall {
 	 * Describes the problem and includes the text the model sent; tool argument validation fails with it.
 	 */
 	argumentsError?: string;
+	/**
+	 * Set by a provider that ran this call inside its own runtime, such as an ACP agent server.
+	 * Pi does not execute it: the call is recorded in the transcript for display and context, and
+	 * `providerResult` becomes its tool result.
+	 */
+	providerExecuted?: boolean;
+	/**
+	 * Outcome the provider reported for a `providerExecuted` call. Absent while the call is still
+	 * running or when the provider reported no output; Pi then records an empty result.
+	 */
+	providerResult?: { content: string; isError?: boolean };
 }
 
 export interface Usage {
