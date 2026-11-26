@@ -1,3 +1,4 @@
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SessionShutdownEvent } from "../src/index.ts";
@@ -13,7 +14,7 @@ type FakeExtensionRunner = {
 type FakeSession = {
 	sessionManager: { getHeader: () => object | undefined };
 	agent: { waitForIdle: () => Promise<void>; subscribe: ReturnType<typeof vi.fn> };
-	state: { messages: AssistantMessage[] };
+	state: { messages: AgentMessage[] };
 	extensionRunner: FakeExtensionRunner;
 	bindExtensions: ReturnType<typeof vi.fn>;
 	subscribe: ReturnType<typeof vi.fn>;
@@ -138,6 +139,48 @@ describe("runPrintMode", () => {
 		expect(errorSpy).toHaveBeenCalledWith("provider failure");
 		expect(session.extensionRunner.emit).toHaveBeenCalledTimes(1);
 		expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" });
+	});
+
+	// ACP runs its own tools, so the turn ends with their results: the assistant message that
+	// requested them is the final response, not the trailing tool result.
+	it("prints the assistant text when the turn ends with tool results", async () => {
+		const assistant = createAssistantMessage({ text: "Tests pass." });
+		assistant.content = [
+			{
+				type: "toolCall",
+				id: "call-1",
+				name: "acp_execute",
+				arguments: { CommandLine: "npm test" },
+				providerExecuted: true,
+				providerResult: { content: "all green" },
+			},
+			{ type: "text", text: "Tests pass." },
+		];
+		const runtimeHost = createRuntimeHost(assistant);
+		runtimeHost.session.state.messages = [
+			assistant,
+			{
+				role: "toolResult",
+				toolCallId: "call-1",
+				toolName: "acp_execute",
+				content: [{ type: "text", text: "all green" }],
+				isError: false,
+				timestamp: Date.now(),
+			},
+		];
+		const chunks: string[] = [];
+		vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string, done?: (error?: Error | null) => void) => {
+			chunks.push(String(chunk));
+			done?.();
+			return true;
+		}) as never);
+
+		const exitCode = await runPrintMode(runtimeHost as unknown as Parameters<typeof runPrintMode>[0], {
+			mode: "text",
+		});
+
+		expect(exitCode).toBe(0);
+		expect(chunks.join("")).toContain("Tests pass.");
 	});
 
 	// #10799

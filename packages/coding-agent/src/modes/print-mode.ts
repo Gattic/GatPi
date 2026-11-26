@@ -6,6 +6,7 @@
  * - `pi --mode json "prompt"` - JSON event stream
  */
 
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai";
 import type { AgentSessionRuntime } from "../core/agent-session-runtime.ts";
 import { flushRawStdout, waitForRawStdoutBackpressure, writeRawStdout } from "../core/output-guard.ts";
@@ -24,6 +25,19 @@ export interface PrintModeOptions {
 	initialMessage?: string;
 	/** Images to attach to the initial message */
 	initialImages?: ImageContent[];
+}
+
+/**
+ * The final response is the last assistant message rather than the last message: a batch of
+ * provider-executed tool calls ends the turn with their results, so the assistant message that
+ * requested them carries the answer.
+ */
+function findLastAssistantMessage(messages: readonly AgentMessage[]): AssistantMessage | undefined {
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index];
+		if (message?.role === "assistant") return message;
+	}
+	return undefined;
 }
 
 /**
@@ -145,20 +159,19 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 
 		if (mode === "text") {
 			const state = session.state;
-			const lastMessage = state.messages[state.messages.length - 1];
+			const lastAssistant = findLastAssistantMessage(state.messages);
 
-			if (lastMessage?.role === "assistant") {
-				const assistantMsg = lastMessage as AssistantMessage;
-				if (assistantMsg.stopReason === "error" || assistantMsg.stopReason === "aborted") {
-					console.error(assistantMsg.errorMessage || `Request ${assistantMsg.stopReason}`);
+			if (lastAssistant) {
+				if (lastAssistant.stopReason === "error" || lastAssistant.stopReason === "aborted") {
+					console.error(lastAssistant.errorMessage || `Request ${lastAssistant.stopReason}`);
 					exitCode = 1;
 				} else {
-					for (const content of assistantMsg.content) {
+					for (const content of lastAssistant.content) {
 						if (content.type === "text") {
 							writeRawStdout(`${content.text}\n`);
 						}
 					}
-					if (assistantMsg.stopReason === "length") {
+					if (lastAssistant.stopReason === "length") {
 						console.error("Response was truncated: the model reached its output token limit.");
 						exitCode = 1;
 					}

@@ -271,13 +271,14 @@ async function runLoop(
 			const toolResults: ToolResultMessage[] = [];
 			hasMoreToolCalls = false;
 			if (toolCalls.length > 0) {
-				// A "length" stop means the output was cut off by the token limit, so
-				// every tool call in the message may carry truncated arguments. Fail
-				// them all instead of executing potentially borked calls.
-				const executedToolBatch =
-					message.stopReason === "length"
-						? await failToolCallsFromTruncatedMessage(toolCalls, emit)
-						: await executeToolCalls(currentContext, message, config, signal, emit);
+				const executedToolBatch = await executeToolCallBatch(
+					currentContext,
+					message,
+					toolCalls,
+					config,
+					signal,
+					emit,
+				);
 				toolResults.push(...executedToolBatch.messages);
 				hasMoreToolCalls = !executedToolBatch.terminate;
 
@@ -515,16 +516,85 @@ async function failToolCallsFromTruncatedMessage(
 }
 
 /**
- * Execute tool calls from an assistant message.
+ * Choose how a batch of tool calls is handled. A provider-executed batch is recorded from the
+ * provider's own outcome, a truncated message fails every call, and Pi's own tools execute.
  */
-async function executeToolCalls(
+async function executeToolCallBatch(
 	currentContext: AgentContext,
 	assistantMessage: AssistantMessage,
+	toolCalls: AgentToolCall[],
 	config: AgentLoopConfig,
 	signal: AbortSignal | undefined,
 	emit: AgentEventSink,
 ): Promise<ExecutedToolCallBatch> {
-	const toolCalls = assistantMessage.content.filter((c) => c.type === "toolCall");
+	const providerCalls = toolCalls.filter((toolCall) => toolCall.providerExecuted === true);
+	const piCalls = toolCalls.filter((toolCall) => toolCall.providerExecuted !== true);
+	if (piCalls.length === 0) {
+		return executeProviderToolCalls(toolCalls, emit);
+	}
+	// A "length" stop means the output was cut off by the token limit, so
+	// every tool call in the message may carry truncated arguments. Fail
+	// them all instead of executing potentially borked calls.
+	const piBatch =
+		assistantMessage.stopReason === "length"
+			? await failToolCallsFromTruncatedMessage(piCalls, emit)
+			: await executeToolCalls(currentContext, assistantMessage, piCalls, config, signal, emit);
+	if (providerCalls.length === 0) return piBatch;
+	// A provider runs its own tools and Pi runs Pi's; a batch that carries both is recorded per
+	// call rather than refused, so the transcript stays paired either way.
+	const providerBatch = await executeProviderToolCalls(providerCalls, emit);
+	return {
+		messages: [...piBatch.messages, ...providerBatch.messages],
+		terminate: piBatch.terminate,
+	};
+}
+
+/**
+ * Record calls a provider already executed in its own runtime. Pi runs nothing: each call's
+ * reported outcome becomes its tool result, so the transcript keeps the call/result pairing every
+ * provider expects, and the batch terminates the turn so no follow-up request is issued for calls
+ * Pi did not run.
+ */
+async function executeProviderToolCalls(
+	toolCalls: AgentToolCall[],
+	emit: AgentEventSink,
+): Promise<ExecutedToolCallBatch> {
+	const messages: ToolResultMessage[] = [];
+	for (const toolCall of toolCalls) {
+		await emit({
+			type: "tool_execution_start",
+			toolCallId: toolCall.id,
+			toolName: toolCall.name,
+			args: toolCall.arguments,
+		});
+		const finalized: FinalizedToolCallOutcome = {
+			toolCall,
+			result: {
+				content: [{ type: "text", text: toolCall.providerResult?.content ?? "" }],
+				details: undefined,
+				terminate: true,
+			},
+			isError: toolCall.providerResult?.isError === true,
+		};
+		await emitToolExecutionEnd(finalized, emit);
+		const toolResultMessage = createToolResultMessage(finalized);
+		await emitToolResultMessage(toolResultMessage, emit);
+		messages.push(toolResultMessage);
+	}
+	return { messages, terminate: true };
+}
+
+/**
+ * Execute the Pi tool calls of an assistant message.
+ */
+async function executeToolCalls(
+	currentContext: AgentContext,
+	assistantMessage: AssistantMessage,
+	toolCalls: AgentToolCall[],
+	config: AgentLoopConfig,
+	signal: AbortSignal | undefined,
+	emit: AgentEventSink,
+): Promise<ExecutedToolCallBatch> {
 	const hasSequentialToolCall = toolCalls.some(
 		(tc) => currentContext.tools?.find((t) => t.name === tc.name)?.executionMode === "sequential",
 	);

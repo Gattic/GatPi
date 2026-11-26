@@ -2232,3 +2232,167 @@ describe("runToolCall", () => {
 		expect(seen).toEqual([undefined, { value: "replaced" }, { value: "both" }, { value: "original" }]);
 	});
 });
+
+describe("provider-executed tool calls", () => {
+	const providerCall = (overrides: Partial<AgentToolCall> = {}): AgentToolCall => ({
+		type: "toolCall",
+		id: "acp-1",
+		name: "acp_execute",
+		arguments: { CommandLine: "npm test" },
+		providerExecuted: true,
+		providerResult: { content: "all green" },
+		...overrides,
+	});
+
+	/** A Pi tool with the same name, so "did Pi run it?" is observable rather than assumed. */
+	function acpTool(onExecute: () => void): AgentTool<any, unknown> {
+		return {
+			name: "acp_execute",
+			label: "ACP execute",
+			description: "Never runs: the provider owns this call",
+			parameters: obj({ CommandLine: str() }),
+			async execute() {
+				onExecute();
+				return { content: [{ type: "text", text: "Pi ran it" }], details: undefined };
+			},
+		};
+	}
+
+	async function run(
+		content: AssistantMessage["content"],
+		stopReason: AssistantMessage["stopReason"] = "stop",
+		tools: AgentTool<any, unknown>[] = [],
+	) {
+		const events: AgentEvent[] = [];
+		let streamCalls = 0;
+		const stream = agentLoop(
+			[createUserMessage("go")],
+			{ messages: [], tools },
+			{ model: createModel(), convertToLlm: identityConverter },
+			undefined,
+			() => {
+				streamCalls++;
+				const response = createAssistantMessageEventStream();
+				queueMicrotask(() => {
+					response.push({
+						type: "done",
+						reason: stopReason === "toolUse" ? "toolUse" : "stop",
+						message: createAssistantMessage(content, stopReason),
+					});
+				});
+				return response;
+			},
+		);
+		for await (const event of stream) events.push(event);
+		return { events, messages: await stream.result(), streamCalls };
+	}
+
+	it("records the provider's outcome without running the call or asking for another turn", async () => {
+		let executed = 0;
+		const { events, messages, streamCalls } = await run(
+			[providerCall(), { type: "text", text: "Tests pass." }],
+			"stop",
+			[acpTool(() => executed++)],
+		);
+		expect(executed).toBe(0);
+		expect(streamCalls).toBe(1);
+
+		const start = events.find((event) => event.type === "tool_execution_start");
+		expect(start?.type === "tool_execution_start" ? start.toolName : undefined).toBe("acp_execute");
+		expect(start?.type === "tool_execution_start" ? start.args : undefined).toEqual({ CommandLine: "npm test" });
+
+		const end = events.find((event) => event.type === "tool_execution_end");
+		expect(end?.type === "tool_execution_end" ? end.isError : undefined).toBe(false);
+		expect(end?.type === "tool_execution_end" ? end.result.content : undefined).toEqual([
+			{ type: "text", text: "all green" },
+		]);
+
+		const result = messages.find((message) => message.role === "toolResult");
+		expect(result?.role === "toolResult" ? result.toolCallId : undefined).toBe("acp-1");
+		expect(result?.role === "toolResult" ? result.toolName : undefined).toBe("acp_execute");
+		expect(result?.role === "toolResult" ? result.content : undefined).toEqual([{ type: "text", text: "all green" }]);
+		expect(result?.role === "toolResult" ? result.isError : undefined).toBe(false);
+		expect(events.at(-1)?.type).toBe("agent_end");
+	});
+
+	it("records a failure the provider reported", async () => {
+		const { events, messages } = await run([
+			providerCall({ providerResult: { content: "permission denied", isError: true } }),
+		]);
+		const end = events.find((event) => event.type === "tool_execution_end");
+		expect(end?.type === "tool_execution_end" ? end.isError : undefined).toBe(true);
+		const result = messages.find((message) => message.role === "toolResult");
+		expect(result?.role === "toolResult" ? result.isError : undefined).toBe(true);
+		expect(result?.role === "toolResult" ? result.content : undefined).toEqual([
+			{ type: "text", text: "permission denied" },
+		]);
+	});
+
+	it("still pairs a call the provider reported no output for", async () => {
+		const { messages } = await run([providerCall({ providerResult: undefined })]);
+		const result = messages.find((message) => message.role === "toolResult");
+		expect(result?.role === "toolResult" ? result.toolCallId : undefined).toBe("acp-1");
+		expect(result?.role === "toolResult" ? result.content : undefined).toEqual([{ type: "text", text: "" }]);
+		expect(result?.role === "toolResult" ? result.isError : undefined).toBe(false);
+	});
+
+	it("keeps the provider's outcome when the message hit the output limit", async () => {
+		// The server already ran the call, so a truncated response cannot invalidate its result.
+		const { messages } = await run([providerCall()], "length");
+		const result = messages.find((message) => message.role === "toolResult");
+		expect(result?.role === "toolResult" ? result.content : undefined).toEqual([{ type: "text", text: "all green" }]);
+		expect(result?.role === "toolResult" ? result.isError : undefined).toBe(false);
+	});
+
+	it("records a provider's call and runs Pi's own in the same message", async () => {
+		let executed = 0;
+		const echo: AgentTool<any, unknown> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo tool",
+			parameters: obj({ value: str() }),
+			async execute(_toolCallId, params) {
+				executed++;
+				return { content: [{ type: "text", text: String(params.value) }], details: undefined };
+			},
+		};
+		const events: AgentEvent[] = [];
+		let streamCalls = 0;
+		const stream = agentLoop(
+			[createUserMessage("go")],
+			{ messages: [], tools: [echo] },
+			{ model: createModel(), convertToLlm: identityConverter },
+			undefined,
+			() => {
+				streamCalls++;
+				const response = createAssistantMessageEventStream();
+				queueMicrotask(() => {
+					response.push({
+						type: "done",
+						reason: "stop",
+						message: createAssistantMessage(
+							streamCalls === 1
+								? [providerCall(), { type: "toolCall", id: "pi-1", name: "echo", arguments: { value: "a" } }]
+								: [{ type: "text", text: "done" }],
+						),
+					});
+				});
+				return response;
+			},
+		);
+		for await (const event of stream) events.push(event);
+		const messages = await stream.result();
+
+		expect(executed).toBe(1);
+		expect(streamCalls).toBe(2);
+		const results = messages.filter((message) => message.role === "toolResult");
+		expect(results.map((result) => (result.role === "toolResult" ? result.toolCallId : undefined))).toEqual([
+			"pi-1",
+			"acp-1",
+		]);
+		expect(results.map((result) => (result.role === "toolResult" ? result.isError : undefined))).toEqual([
+			false,
+			false,
+		]);
+	});
+});
