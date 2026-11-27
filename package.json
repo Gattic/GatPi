@@ -54,6 +54,7 @@
 		"release:minor": "node scripts/release.mjs minor",
 		"release:major": "node scripts/release.mjs major",
 		"release:fix-links": "node scripts/release-notes.mjs fix-github-releases",
+		"setup:links": "bash scripts/fix-module-links.sh",
 		"prepare": "husky"
 	},
 	"devDependencies": {
