@@ -45,6 +45,13 @@ export class AssistantMessageComponent extends Container {
 	private timestamp?: string;
 	private thinkingVisibilityOverrides = new Map<number, boolean>();
 	private markdownSlots: MarkdownSlot[] = [];
+	/**
+	 * Content blocks this component draws, as a half-open range. A message whose tool calls run
+	 * between its text blocks is drawn as several components, one per text run, so a tool row can
+	 * sit between them in transcript order.
+	 */
+	private windowStart = 0;
+	private windowEnd = Number.POSITIVE_INFINITY;
 
 	constructor(
 		message?: AssistantMessage,
@@ -110,6 +117,13 @@ export class AssistantMessageComponent extends Container {
 		return Boolean(this.lastMessage?.content.some((content) => content.type === "text" && content.text.trim()));
 	}
 
+	/** Draw only the content blocks in `[start, end)`; later calls keep the range. */
+	setContentWindow(start: number, end = Number.POSITIVE_INFINITY): void {
+		this.windowStart = start;
+		this.windowEnd = end;
+		if (this.lastMessage) this.updateContent(this.lastMessage);
+	}
+
 	override render(width: number): string[] {
 		const lines = super.render(width);
 		if (this.hasToolCalls || lines.length === 0) {
@@ -156,8 +170,9 @@ export class AssistantMessageComponent extends Container {
 		};
 
 		// Render content in order
+		const contentEnd = Math.min(message.content.length, this.windowEnd);
 		let thinkingRunIndex = 0;
-		for (let i = 0; i < message.content.length; i++) {
+		for (let i = this.windowStart; i < contentEnd; i++) {
 			const content = message.content[i];
 			if (content.type === "text" && content.text.trim()) {
 				// Assistant text messages with no background - trim the text
@@ -183,7 +198,7 @@ export class AssistantMessageComponent extends Container {
 				);
 			} else if (content.type === "thinking") {
 				const thinkingBlocks: string[] = [];
-				for (; i < message.content.length; i++) {
+				for (; i < contentEnd; i++) {
 					const thinkingContent = message.content[i];
 					if (thinkingContent.type !== "thinking") {
 						break;
@@ -251,6 +266,10 @@ export class AssistantMessageComponent extends Container {
 		// Length stops can happen before a tool call is complete, so surface them here too.
 		const hasToolCalls = message.content.some((c) => c.type === "toolCall");
 		this.hasToolCalls = hasToolCalls;
+		// A trailing notice belongs to the segment that ends the message, not to each frozen one.
+		if (this.windowEnd < message.content.length) {
+			return;
+		}
 		if (message.stopReason === "length") {
 			this.contentContainer.addChild(new Spacer(1));
 			this.contentContainer.addChild(

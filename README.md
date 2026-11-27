@@ -110,6 +110,18 @@ npm run check         # Lint, format, and type check
 ./pi-test.sh         # Run pi from sources (can be run from any directory)
 ```
 
+If you work in a Git worktree that shares another checkout's `node_modules`, the
+`@earendil-works/*` and `@todo/app` links resolve from that other tree, and the
+same package is loaded twice (chord's contract registry and tui's native module
+then reject handles from the other copy). Point the links back at this checkout
+after installing:
+
+```bash
+npm run setup:links   # Recreate the workspace links; verifies one instance per package
+```
+
+The command is idempotent and only touches `node_modules`.
+
 ### Using local packages outside the monorepo
 
 Build every public package into one coherent local artifact set:

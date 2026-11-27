@@ -257,6 +257,13 @@ export interface StreamOptions extends ProviderRequestOptions<Model<Api>> {
 	 */
 	sessionId?: string;
 	/**
+	 * Working directory of the session the request belongs to. Providers that run local processes
+	 * for the request (for example an agent server speaking a local protocol) use it as the
+	 * workspace; HTTP providers ignore it. Pi sets it from the session, which can differ from the
+	 * process directory when a session from another project is resumed.
+	 */
+	cwd?: string;
+	/**
 	 * Do not use or record server-side continuation state for this request (for example
 	 * Anthropic message threads). Set this for replays such as cache warming, which must not
 	 * replace the state of the real conversation. Providers that do not keep continuation
