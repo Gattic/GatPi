@@ -291,6 +291,8 @@ type CompactionCostNotice = {
 };
 
 type RenderSessionItem = AgentMessage | Extract<SessionEntry, { type: "custom" | "usage" }> | CompactionCostNotice;
+/** A tool call block of an assistant message, with the outcome a provider reported for it. */
+type AssistantToolCallBlock = Extract<AssistantMessage["content"][number], { type: "toolCall" }>;
 
 function isCustomSessionEntry(item: RenderSessionItem): item is Extract<SessionEntry, { type: "custom" }> {
 	return "type" in item && item.type === "custom";
@@ -528,6 +530,10 @@ export class InteractiveMode {
 	private streamingComponent: AssistantMessageComponent | undefined = undefined;
 	private readonly entriesRenderedByBoundaryCompaction = new Set<string>();
 	private streamingMessage: AssistantMessage | undefined = undefined;
+	/** Content index where the active streaming segment starts; earlier blocks are frozen. */
+	private streamingSegmentStart = 0;
+	/** Every text segment of the streaming message, in transcript order. */
+	private streamingSegments: AssistantMessageComponent[] = [];
 
 	// Tool execution tracking: toolCallId -> component
 	private pendingTools = new Map<string, ToolExecutionComponent>();
@@ -2431,6 +2437,52 @@ export class InteractiveMode {
 		);
 	}
 
+	/**
+	 * Draw or refresh the row of a tool call announced while its message streams.
+	 *
+	 * A provider-executed call runs inside the provider's own runtime, so its row is drawn as soon
+	 * as the provider reports the call instead of after the whole message.
+	 */
+	private upsertToolRow(block: AssistantToolCallBlock): void {
+		const component = this.pendingTools.get(block.id);
+		if (component) {
+			component.updateArgs(block.arguments);
+			return;
+		}
+		const created = new ToolExecutionComponent(
+			block.name,
+			block.id,
+			block.arguments,
+			{
+				showImages: this.settingsManager.getShowImages(),
+				imageWidthCells: this.settingsManager.getImageWidthCells(),
+				outputPad: this.outputPad,
+			},
+			this.getRegisteredToolDefinition(block.name),
+			this.ui,
+			this.sessionManager.getCwd(),
+		);
+		created.setExpanded(this.toolOutputExpanded);
+		this.chatContainer.addChild(created);
+		this.pendingTools.set(block.id, created);
+	}
+
+	/**
+	 * Show the outcome a provider reported for a call while its message streams. The paired tool
+	 * result completes the same row after the message, so replaying the transcript needs no such
+	 * step: only the live turn has the outcome before the result message exists.
+	 */
+	private applyProviderResult(block: AssistantToolCallBlock): void {
+		const result = block.providerResult;
+		const component = this.pendingTools.get(block.id);
+		if (!result || !component) return;
+		component.markExecutionStarted();
+		component.updateResult({
+			content: [{ type: "text", text: result.content ?? "" }],
+			isError: result.isError === true,
+		});
+	}
+
 	private getMarkdownTransformers(): MarkdownTransformer[] {
 		return [this.mermaidMarkdownTransformer, ...this.session.extensionRunner.getMarkdownTransformers()];
 	}
@@ -3719,6 +3771,8 @@ export class InteractiveMode {
 						this.outputPad,
 						this.getMarkdownTransformers(),
 					);
+					this.streamingSegments = [this.streamingComponent];
+					this.streamingSegmentStart = 0;
 					this.streamingMessage = event.message;
 					this.chatContainer.addChild(this.streamingComponent);
 					this.streamingComponent.updateContent(this.streamingMessage, true);
@@ -3729,35 +3783,36 @@ export class InteractiveMode {
 			case "message_update":
 				if (this.streamingComponent && event.message.role === "assistant") {
 					this.streamingMessage = event.message;
-					this.streamingComponent.updateContent(this.streamingMessage, true);
-
-					for (const content of this.streamingMessage.content) {
-						if (content.type === "toolCall") {
-							if (!this.pendingTools.has(content.id)) {
-								const component = new ToolExecutionComponent(
-									content.name,
-									content.id,
-									content.arguments,
-									{
-										showImages: this.settingsManager.getShowImages(),
-										imageWidthCells: this.settingsManager.getImageWidthCells(),
-										outputPad: this.outputPad,
-									},
-									this.getRegisteredToolDefinition(content.name),
-									this.ui,
-									this.sessionManager.getCwd(),
-								);
-								component.setExpanded(this.toolOutputExpanded);
-								this.chatContainer.addChild(component);
-								this.pendingTools.set(content.id, component);
-							} else {
-								const component = this.pendingTools.get(content.id);
-								if (component) {
-									component.updateArgs(content.arguments);
-								}
-							}
-						}
+					const content = this.streamingMessage.content;
+					// A tool call sits between text runs: a provider-executed call runs while the
+					// message streams, and Pi's own calls end it. Freeze the text before the call and
+					// draw its row there, so the transcript reads in transcript order instead of showing
+					// every call after the whole message.
+					const callIndex = content.findIndex(
+						(block, index) => index >= this.streamingSegmentStart && block.type === "toolCall",
+					);
+					if (callIndex >= 0) {
+						const block = content[callIndex] as AssistantToolCallBlock;
+						this.streamingComponent.setContentWindow(this.streamingSegmentStart, callIndex);
+						this.streamingComponent.updateContent(this.streamingMessage, false);
+						this.upsertToolRow(block);
+						this.applyProviderResult(block);
+						this.streamingSegmentStart = callIndex + 1;
+						// Text that follows the call belongs to a new segment below the row.
+						const segment = new AssistantMessageComponent(
+							undefined,
+							this.hideThinkingBlock,
+							this.getMarkdownThemeWithSettings(),
+							this.hiddenThinkingLabel,
+							this.outputPad,
+							this.getMarkdownTransformers(),
+						);
+						segment.setContentWindow(this.streamingSegmentStart);
+						this.streamingSegments.push(segment);
+						this.streamingComponent = segment;
+						this.chatContainer.addChild(segment);
 					}
+					this.streamingComponent.updateContent(this.streamingMessage, true);
 					this.ui.requestRender();
 				}
 				break;
@@ -3775,6 +3830,11 @@ export class InteractiveMode {
 								: "Operation aborted";
 						this.streamingMessage.errorMessage = errorMessage;
 					}
+					// The last segment owns everything still unrendered, including any trailing notice.
+					this.streamingComponent.setContentWindow(
+						this.streamingSegmentStart,
+						this.streamingMessage.content.length,
+					);
 					this.streamingComponent.updateContent(this.streamingMessage, false);
 
 					if (this.streamingMessage.stopReason === "aborted" || this.streamingMessage.stopReason === "error") {
@@ -3799,6 +3859,8 @@ export class InteractiveMode {
 					}
 					this.streamingComponent = undefined;
 					this.streamingMessage = undefined;
+					this.streamingSegments = [];
+					this.streamingSegmentStart = 0;
 					this.footer.invalidate();
 				}
 				this.ui.requestRender();
@@ -3860,11 +3922,16 @@ export class InteractiveMode {
 					this.ui.terminal.setProgress(false);
 				}
 				this.clearStatusIndicator("working");
-				if (this.streamingComponent) {
-					this.chatContainer.removeChild(this.streamingComponent);
-					this.streamingComponent = undefined;
-					this.streamingMessage = undefined;
+				for (const segment of this.streamingSegments) {
+					this.chatContainer.removeChild(segment);
 				}
+				if (this.streamingComponent && !this.streamingSegments.includes(this.streamingComponent)) {
+					this.chatContainer.removeChild(this.streamingComponent);
+				}
+				this.streamingSegments = [];
+				this.streamingComponent = undefined;
+				this.streamingMessage = undefined;
+				this.streamingSegmentStart = 0;
 				this.pendingTools.clear();
 
 				this.ui.requestRender();
@@ -4167,8 +4234,9 @@ export class InteractiveMode {
 			return;
 		}
 
-		if (this.streamingComponent) {
-			const streamingIndex = this.chatContainer.children.indexOf(this.streamingComponent);
+		const anchor = this.streamingSegments[0] ?? this.streamingComponent;
+		if (anchor) {
+			const streamingIndex = this.chatContainer.children.indexOf(anchor);
 			if (streamingIndex >= 0) {
 				this.chatContainer.children.splice(streamingIndex, 0, component);
 				return;
@@ -4322,6 +4390,79 @@ export class InteractiveMode {
 		}
 	}
 
+	/**
+	 * Draw an assistant message as its text runs with each tool call's row between them, in
+	 * transcript order. A provider-executed call runs while its message streams, so its row belongs
+	 * where the call happened rather than after the whole message.
+	 */
+	private addAssistantMessageWithToolRows(
+		message: AssistantMessage,
+		meta: { id: string; timestamp: string } | undefined,
+		renderedPendingTools: Map<string, ToolExecutionComponent>,
+	): void {
+		const content = message.content;
+		let segmentStart = 0;
+		for (let index = 0; index < content.length; index++) {
+			const block = content[index];
+			if (block.type !== "toolCall") continue;
+			if (index > segmentStart) {
+				this.addAssistantSegment(message, meta, segmentStart, index);
+			}
+			const component = new ToolExecutionComponent(
+				block.name,
+				block.id,
+				block.arguments,
+				{
+					showImages: this.settingsManager.getShowImages(),
+					imageWidthCells: this.settingsManager.getImageWidthCells(),
+					outputPad: this.outputPad,
+				},
+				this.getRegisteredToolDefinition(block.name),
+				this.ui,
+				this.sessionManager.getCwd(),
+			);
+			component.setExpanded(this.toolOutputExpanded);
+			this.chatContainer.addChild(component);
+			if (message.stopReason === "aborted" || message.stopReason === "error") {
+				const retryAttempt = this.session.retryAttempt;
+				const errorMessage =
+					message.stopReason === "aborted"
+						? retryAttempt > 0
+							? `Aborted after ${retryAttempt} retry attempt${retryAttempt > 1 ? "s" : ""}`
+							: "Operation aborted"
+						: message.errorMessage || "Error";
+				component.updateResult({ content: [{ type: "text", text: errorMessage }], isError: true });
+			} else {
+				renderedPendingTools.set(block.id, component);
+			}
+			segmentStart = index + 1;
+		}
+		if (segmentStart < content.length) {
+			this.addAssistantSegment(message, meta, segmentStart, content.length);
+		}
+	}
+
+	/** One text run of an assistant message, drawn as a component of its own. */
+	private addAssistantSegment(
+		message: AssistantMessage,
+		meta: { id: string; timestamp: string } | undefined,
+		from: number,
+		to: number,
+	): void {
+		const component = new AssistantMessageComponent(
+			message,
+			this.hideThinkingBlock,
+			this.getMarkdownThemeWithSettings(),
+			this.hiddenThinkingLabel,
+			this.outputPad,
+			this.getMarkdownTransformers(),
+			meta?.id,
+			meta?.timestamp,
+		);
+		component.setContentWindow(from, to);
+		this.chatContainer.addChild(component);
+	}
+
 	private renderSessionItems(
 		items: readonly RenderSessionItem[],
 		messageMeta?: Map<AgentMessage, { id: string; timestamp: string }>,
@@ -4358,45 +4499,15 @@ export class InteractiveMode {
 			// Assistant messages need special handling for tool calls
 			if (message.role === "assistant") {
 				const meta = messageMeta?.get(message);
-				this.addMessageToChat(message, {
-					messageId: meta?.id,
-					timestamp: meta?.timestamp,
-				});
-				// Render tool call components
-				for (const content of message.content) {
-					if (content.type === "toolCall") {
-						const component = new ToolExecutionComponent(
-							content.name,
-							content.id,
-							content.arguments,
-							{
-								showImages: this.settingsManager.getShowImages(),
-								imageWidthCells: this.settingsManager.getImageWidthCells(),
-								outputPad: this.outputPad,
-							},
-							this.getRegisteredToolDefinition(content.name),
-							this.ui,
-							this.sessionManager.getCwd(),
-						);
-						component.setExpanded(this.toolOutputExpanded);
-						this.chatContainer.addChild(component);
-
-						if (message.stopReason === "aborted" || message.stopReason === "error") {
-							let errorMessage: string;
-							if (message.stopReason === "aborted") {
-								const retryAttempt = this.session.retryAttempt;
-								errorMessage =
-									retryAttempt > 0
-										? `Aborted after ${retryAttempt} retry attempt${retryAttempt > 1 ? "s" : ""}`
-										: "Operation aborted";
-							} else {
-								errorMessage = message.errorMessage || "Error";
-							}
-							component.updateResult({ content: [{ type: "text", text: errorMessage }], isError: true });
-						} else {
-							renderedPendingTools.set(content.id, component);
-						}
-					}
+				const hasToolCalls = message.content.some((content) => content.type === "toolCall");
+				if (hasToolCalls) {
+					// A call that ran between two text runs stays between them in the transcript.
+					this.addAssistantMessageWithToolRows(message, meta, renderedPendingTools);
+				} else {
+					this.addMessageToChat(message, {
+						messageId: meta?.id,
+						timestamp: meta?.timestamp,
+					});
 				}
 				if (message.stopReason !== "aborted" && message.stopReason !== "error") {
 					const miss = cacheMisses.get(message);

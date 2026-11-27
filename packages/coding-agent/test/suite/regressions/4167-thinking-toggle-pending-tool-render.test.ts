@@ -52,6 +52,17 @@ type RenderSessionContextThis = {
 	getRegisteredToolDefinition(toolName: string): undefined;
 	maybeShowAssistantDiagnostics(message: AssistantMessage): void;
 	addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean }): void;
+	addAssistantMessageWithToolRows(
+		message: AssistantMessage,
+		meta: { id: string; timestamp: string } | undefined,
+		renderedPendingTools: Map<string, ToolExecutionComponent>,
+	): void;
+	addAssistantSegment(
+		message: AssistantMessage,
+		meta: { id: string; timestamp: string } | undefined,
+		start: number,
+		end?: number,
+	): void;
 	renderSessionItems: RenderSessionItems;
 };
 
@@ -88,6 +99,16 @@ function createFakeInteractiveModeThis(): RenderSessionContextThis {
 		addMessageToChat(message: AgentMessage) {
 			chatContainer.addChild(new Text(message.role, 0, 0));
 		},
+		addAssistantMessageWithToolRows: (
+			InteractiveMode.prototype as unknown as {
+				addAssistantMessageWithToolRows: RenderSessionContextThis["addAssistantMessageWithToolRows"];
+			}
+		).addAssistantMessageWithToolRows,
+		addAssistantSegment: (
+			InteractiveMode.prototype as unknown as {
+				addAssistantSegment: RenderSessionContextThis["addAssistantSegment"];
+			}
+		).addAssistantSegment,
 	};
 }
 
