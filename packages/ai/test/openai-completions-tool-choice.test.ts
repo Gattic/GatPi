@@ -1432,8 +1432,8 @@ describe("openai-completions tool_choice", () => {
 		expect(messages[0]).not.toHaveProperty("reasoning");
 	});
 
-	it("sends thinking disabled for OpenCode Kimi K2.6 when thinking is off", async () => {
-		const model = getModel("opencode", "kimi-k2.6")!;
+	it("sends thinking disabled for DeepSeek models served without reasoning effort", async () => {
+		const model = getModel("cloudflare-ai-gateway", "workers-ai/@cf/deepseek-ai/deepseek-v4.1-flash-1017")!;
 		let payload: unknown;
 
 		await streamSimple(
@@ -1454,8 +1454,8 @@ describe("openai-completions tool_choice", () => {
 		expect(params.reasoning_effort).toBeUndefined();
 	});
 
-	it("sends thinking enabled for OpenCode Kimi K2.6 when thinking is enabled", async () => {
-		const model = getModel("opencode", "kimi-k2.6")!;
+	it("sends thinking enabled for DeepSeek models served without reasoning effort", async () => {
+		const model = getModel("cloudflare-ai-gateway", "workers-ai/@cf/deepseek-ai/deepseek-v4.1-flash-1017")!;
 		let payload: unknown;
 
 		await streamSimple(
@@ -1526,7 +1526,7 @@ describe("openai-completions tool_choice", () => {
 	});
 
 	it("sends max_tokens for OpenCode completions models", async () => {
-		const cases = [getModel("opencode-go", "kimi-k3")!, getModel("opencode", "kimi-k2.6")!] as const;
+		const cases = [getModel("opencode-go", "kimi-k3")!, getModel("opencode", "kimi-k2.7-code")!] as const;
 
 		for (const model of cases) {
 			let payload: unknown;

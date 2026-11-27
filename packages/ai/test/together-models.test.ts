@@ -24,7 +24,7 @@ describe("Together models", () => {
 		expect(model.thinkingLevelMap).toEqual({ minimal: null, low: null, medium: null });
 		expect(model.input).toEqual(["text", "image"]);
 		expect(model.contextWindow).toBe(1048576);
-		expect(model.maxTokens).toBe(131072);
+		expect(model.maxTokens).toBe(1048576);
 		expect(model.cost).toEqual({
 			input: 3,
 			output: 15,
@@ -43,31 +43,28 @@ describe("Together models", () => {
 	});
 
 	it("models Together reasoning controls from the Together API surface", () => {
-		const gptOss = getModel("together", "openai/gpt-oss-120b");
-		expect(gptOss.thinkingLevelMap).toEqual({
-			off: null,
-			minimal: null,
-			low: "low",
-			medium: "medium",
-			high: "high",
-			max: null,
-			xhigh: null,
-		});
-		expect(gptOss.compat).toMatchObject({
-			supportsReasoningEffort: true,
-			thinkingFormat: "openai",
-		});
-
-		const deepSeekV4 = getModel("together", "deepseek-ai/DeepSeek-V4-Pro-0813");
-		expect(deepSeekV4.thinkingLevelMap).toEqual({
+		// models.dev no longer serves the openai/gpt-oss and DeepSeek-V4-Pro entries
+		// that Together exposes as reasoning-effort models, so every reasoning model
+		// in the current catalog is a plain on/off toggle.
+		const glm = getModel("together", "zai-org/GLM-5.3");
+		expect(glm.thinkingLevelMap).toEqual({
 			minimal: null,
 			low: null,
 			medium: null,
-			high: "high",
-			xhigh: null,
 		});
-		expect(deepSeekV4.compat).toMatchObject({
-			supportsReasoningEffort: true,
+		expect(glm.compat).toMatchObject({
+			supportsReasoningEffort: false,
+			thinkingFormat: "together",
+		});
+
+		const qwen = getModel("together", "Qwen/Qwen3.7-Max");
+		expect(qwen.thinkingLevelMap).toEqual({
+			minimal: null,
+			low: null,
+			medium: null,
+		});
+		expect(qwen.compat).toMatchObject({
+			supportsReasoningEffort: false,
 			thinkingFormat: "together",
 		});
 	});
